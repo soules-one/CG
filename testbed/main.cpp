@@ -18,10 +18,114 @@ constexpr float camera_fov = 70.0f;
 constexpr float camera_near_plane = 0.01f;
 constexpr float camera_far_plane = 100.0f;
 
+float ind_num = 0;
+
 struct Vertex {
 	veekay::vec3 position;
-	// NOTE: You can add more attributes
+	veekay::vec3 normal;
+	veekay::vec3 color;
 };
+
+veekay::mat4 identity() {
+	veekay::mat4 result{};
+
+	result[0][0] = 1.0f;
+	result[1][1] = 1.0f;
+	result[2][2] = 1.0f;
+	result[3][3] = 1.0f;
+	
+	return result;
+}
+
+veekay::mat4 projection(float fov, float aspect_ratio, float near, float far) {
+	veekay::mat4 result{};
+
+	const float radians = fov * M_PI / 180.0f;
+	const float cot = 1.0f / tanf(radians / 2.0f);
+
+	result[0][0] = cot / aspect_ratio;
+	result[1][1] = cot;
+	result[2][3] = 1.0f;
+
+	result[2][2] = far / (far - near);
+	result[3][2] = (-near * far) / (far - near);
+
+	return result;
+}
+
+veekay::vec3 sum(veekay::vec3 t, veekay::vec3 other){
+	veekay::vec3 result = other;
+	result.x += t.x;
+	result.y += t.y;
+	result.z += t.z;
+	return result;
+}
+
+veekay::mat4 translation(veekay::vec3 vector) {
+	veekay::mat4 result = identity();
+
+	result[3][0] = vector.x;
+	result[3][1] = vector.y;
+	result[3][2] = vector.z;
+
+	return result;
+}
+
+veekay::mat4 rotation(veekay::vec3 axis, float angle) {
+	veekay::mat4 result{};
+
+	float length = sqrtf(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z);
+
+	axis.x /= length;
+	axis.y /= length;
+	axis.z /= length;
+
+	float sina = sinf(angle);
+	float cosa = cosf(angle);
+	float cosv = 1.0f - cosa;
+
+	result[0][0] = (axis.x * axis.x * cosv) + cosa;
+	result[0][1] = (axis.x * axis.y * cosv) + (axis.z * sina);
+	result[0][2] = (axis.x * axis.z * cosv) - (axis.y * sina);
+
+	result[1][0] = (axis.y * axis.x * cosv) - (axis.z * sina);
+	result[1][1] = (axis.y * axis.y * cosv) + cosa;
+	result[1][2] = (axis.y * axis.z * cosv) + (axis.x * sina);
+
+	result[2][0] = (axis.z * axis.x * cosv) + (axis.y * sina);
+	result[2][1] = (axis.z * axis.y * cosv) - (axis.x * sina);
+	result[2][2] = (axis.z * axis.z * cosv) + cosa;
+
+	result[3][3] = 1.0f;
+
+	return result;
+}
+
+veekay::mat4 multiply(const veekay::mat4& a, const veekay::mat4& b) {
+	veekay::mat4 result{};
+
+	for (int j = 0; j < 4; j++) {
+		for (int i = 0; i < 4; i++) {
+			for (int k = 0; k < 4; k++) {
+				result[j][i] += a[j][k] * b[k][i];
+			}
+		}
+	}
+
+	return result;
+}
+
+veekay::mat4 orthographic(float left, float right, float bottom, float top, float near, float far) {
+	veekay::mat4 m{};
+	m[0][0] = 2.0f / (right - left);
+	m[1][1] = 2.0f / (top - bottom);
+	m[2][2] = 1.0f / (far - near);
+	m[3][0] = - (right + left) / (right - left);
+	m[3][1] = - (top + bottom) / (top - bottom);
+	m[3][2] = - near / (far - near);
+	m[3][3] = 1.0f;
+	return m;
+}
 
 // NOTE: These variable will be available to shaders through push constant uniform
 struct ShaderConstants {
@@ -29,7 +133,6 @@ struct ShaderConstants {
 	veekay::mat4 transform;
 	veekay::vec3 color;
 };
-
 VkShaderModule vertex_shader_module;
 VkShaderModule fragment_shader_module;
 VkPipelineLayout pipeline_layout;
@@ -39,10 +142,46 @@ VkPipeline pipeline;
 veekay::graphics::Buffer* vertex_buffer;
 veekay::graphics::Buffer* index_buffer;
 
-veekay::vec3 model_position = {0.0f, 0.0f, 5.0f};
+veekay::vec3 model_position = {0.0f, 0.0f, 1.0f};
+bool anim_reverse = false;
+bool anim_play = false;
+bool anim_switch = true;
+bool is_circle = true;
+float pause_time = 0.0f;
+float acc_time = 0.0f;
+float cicle = 10.0f;
 float model_rotation;
-veekay::vec3 model_color = {0.5f, 1.0f, 0.7f };
-bool model_spin = true;
+veekay::vec3 model_color = {1.0f, 1.0f, 1.0f };
+veekay::vec3 model_curr_diff = {0.0f, 0.0f, 0.0f};
+veekay::mat4 curr_proj;
+bool model_spin = false;
+bool orthograph = true;
+float fig_w = 0.5f;
+float fig_h = 1.0f;
+float radius = 5.0f;
+
+veekay::vec3 circleAnimation(float time){
+	veekay::vec3 diff = {0.0f, 0.0f, 0.0f};
+	float angle = 2.0f * M_PIf * time / cicle;
+	float x = radius * sin(angle);
+	float z = radius - radius * cos(angle) ;
+	diff.x =  x;
+	diff.z =  z;
+	return diff;
+}
+
+veekay::vec3 elipseAnimation(float time){
+	veekay::vec3 diff = {0.0f, 0.0f, 0.0f};
+	float angle = 2.0f * M_PIf * time / cicle;
+	float y = radius * 2.0f * sin(angle);
+	float x = y;
+	float z = 2.0f * radius -  radius * 2.0f * cos(angle);
+	diff.y = y;
+	diff.z = z;
+	diff.x = x;
+	return diff;
+}
+
 
 // NOTE: Loads shader byte code from file
 // NOTE: Your shaders are compiled via CMake with this code too, look it up
@@ -120,6 +259,18 @@ void initialize() {
 				.binding = 0, // NOTE: First vertex buffer
 				.format = VK_FORMAT_R32G32B32_SFLOAT, // NOTE: 3-component vector of floats
 				.offset = offsetof(Vertex, position), // NOTE: Offset of "position" field in a Vertex struct
+			},
+			 {
+				.location = 1,
+				.binding = 0,
+				.format = VK_FORMAT_R32G32B32_SFLOAT,
+				.offset = offsetof(Vertex, normal)
+			},
+			{
+				.location = 2,
+				.binding = 0,
+				.format = VK_FORMAT_R32G32B32_SFLOAT,
+				.offset = offsetof(Vertex, color)
 			},
 		};
 
@@ -256,28 +407,58 @@ void initialize() {
 		}
 	}
 
-	// TODO: You define model vertices and create buffers here
-	// TODO: Index buffer has to be created here too
-	// NOTE: Look for createBuffer function
-
-	// (v0)------(v1)
-	//  |  \       |
-	//  |   `--,   |
-	//  |       \  |
-	// (v3)------(v2)
-	Vertex vertices[] = {
-		{{-1.0f, -1.0f, 0.0f}},
-		{{1.0f, -1.0f, 0.0f}},
-		{{1.0f, 1.0f, 0.0f}},
-		{{-1.0f, 1.0f, 0.0f}},
+	class Cylinder{
+	private:
+		const int segments = 50;
+		const float radius = fig_w / 2;
+		const float height = fig_h;
+		veekay::vec3 calculateGradient(float x, int i){
+			float t = (x + height/2.0f) / height;
+			return {0.0f + t, 0.0f, 1.0f - t};
+		};
+		void generateSideSurface(std::vector<Vertex> & vertices, std::vector<uint32_t> & indices){
+			for (int i = 0; i < segments / 2; ++ i){
+				float angle = 2.0f * M_PIf * i / (segments / 2);
+				float x = radius * cos(angle);
+				float z = radius * sin(angle);
+				Vertex bottom, top;
+				bottom.position = {x, -height/2.0f, z};
+				bottom.normal = {cos(angle), 0.0f, sin(angle)};
+				bottom.color = calculateGradient(-height/2.0f, i);
+				top.position = {x, height/2.0f, z};
+				top.normal = {cos(angle), 0.0f, sin(angle)};
+				top.color = calculateGradient(height/2.0f, i);
+				vertices.push_back(bottom);
+				vertices.push_back(top);
+			}
+			for (int i = 0; i < segments / 2; ++ i){
+				uint32_t bleft = (i * 2) % segments;
+				uint32_t tleft = (i * 2 + 1) % segments;
+				uint32_t bright = ((i + 1) * 2) % segments;
+				uint32_t tright = (((i + 1) * 2) + 1) % segments;
+				indices.insert(indices.end(), {tleft, bright, tright, bright, tleft, bleft});
+				indices.insert(indices.end(), {tleft, tright, bright, bright, bleft, tleft});
+			}
+		};
+	public:
+		void generateGeometry(std::vector<Vertex> & vertices, std::vector<uint32_t> & indices){
+			vertices.clear();
+			indices.clear();
+			generateSideSurface(vertices, indices);
+		};
+		
 	};
+	std::vector<Vertex> vertices;
+	std::vector<uint32_t> indices;
 
-	uint32_t indices[] = { 0, 1, 2, 2, 3, 0 };
+	Cylinder geom;
+	geom.generateGeometry(vertices, indices);
+	ind_num = indices.size();
 
-	vertex_buffer = new veekay::graphics::Buffer(sizeof(vertices), vertices,
+	vertex_buffer = new veekay::graphics::Buffer(vertices.size() * sizeof(Vertex), vertices.data(),
 	                                             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
 
-	index_buffer = new veekay::graphics::Buffer(sizeof(indices), indices,
+	index_buffer = new veekay::graphics::Buffer(indices.size() * sizeof(uint32_t), indices.data(),
 	                                            VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 }
 
@@ -300,12 +481,48 @@ void update(double time) {
 	ImGui::SliderFloat("Rotation", &model_rotation, 0.0f, 2.0f * M_PI);
 	ImGui::Checkbox("Spin?", &model_spin);
 	// TODO: Your GUI stuff here
+	ImGui::Checkbox("Ortho?", &orthograph);
+	ImGui::Checkbox("Simple animation", &anim_switch);
+	ImGui::SliderFloat("Animation Param", &radius, 0.1f, 10.f);
+	ImGui::Checkbox("Play", &anim_play);
+	ImGui::Checkbox("Reversed", &anim_reverse);
 	ImGui::End();
 
 	// NOTE: Animation code and other runtime variable updates go here
 	if (model_spin) {
 		model_rotation = float(time);
 	}
+	if(anim_switch != is_circle){
+		acc_time = 0.0f;
+		pause_time = 0.0f;
+		is_circle = anim_switch;
+	}
+	if (anim_play){
+		float delta;
+		if (pause_time == 0.0f) pause_time = float(time);
+		if (!anim_reverse)
+			{delta = float(time) - pause_time;}
+		else{
+			delta = - float(time) + pause_time;}
+		acc_time  = fmodf(acc_time + delta, cicle);
+		if (acc_time < 0) acc_time += cicle;
+		model_curr_diff = is_circle? circleAnimation(acc_time) : elipseAnimation(acc_time);
+		pause_time = float(time);
+	}
+	if(!anim_play){
+		pause_time = 0.0f;
+	}
+	const float aspect = float(veekay::app.window_width) / float(veekay::app.window_height);
+	if (orthograph) {
+			curr_proj = orthographic(-fig_w * aspect* 0.5f, fig_w  * aspect* 0.5f, 
+				-fig_h * 0.5f, fig_h * 0.5f,
+			camera_near_plane, camera_far_plane);
+		} else {
+			curr_proj = veekay::mat4::projection(
+				camera_fov,
+				aspect,
+				camera_near_plane, camera_far_plane);
+		}
 
 	model_rotation = fmodf(model_rotation, 2.0f * M_PI);
 }
@@ -360,14 +577,12 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
 		vkCmdBindIndexBuffer(cmd, index_buffer->buffer, offset, VK_INDEX_TYPE_UINT32);
 
 		// NOTE: Variables like model_XXX were declared globally
-		ShaderConstants constants{
-			.projection = veekay::mat4::projection(
-				camera_fov,
-				float(veekay::app.window_width) / float(veekay::app.window_height),
-				camera_near_plane, camera_far_plane),
 
-			.transform = veekay::mat4::rotation({0.0f, 1.0f, 0.0f}, model_rotation) *
-			             veekay::mat4::translation(model_position),
+		ShaderConstants constants{
+			.projection = curr_proj,
+
+			.transform = veekay::mat4::rotation({1.0f, 1.0f, 0.0f}, model_rotation) *
+			             veekay::mat4::translation(sum(model_position, model_curr_diff)),
 
 			.color = model_color,
 		};
@@ -378,7 +593,7 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
 		                   0, sizeof(ShaderConstants), &constants);
 
 		// NOTE: Draw 6 indices (3 vertices * 2 triangles), 1 group, no offsets
-		vkCmdDrawIndexed(cmd, 6, 1, 0, 0, 0);
+		vkCmdDrawIndexed(cmd, static_cast<uint32_t>(ind_num), 1, 0, 0, 0);
 	}
 
 	vkCmdEndRenderPass(cmd);

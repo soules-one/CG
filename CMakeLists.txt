@@ -18,7 +18,7 @@ elseif(MSVC)
 	target_compile_options(${PROJECT_NAME} PRIVATE /W4)
 	target_link_options(${PROJECT_NAME} PRIVATE /subsystem:windows /entry:mainCRTStartup)
 else()
-	message(FATAL_ERROR "${CMAKE_SYSTEM_NAME} is not supported")
+	target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
 endif()
 
 set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD_REQUIRED TRUE CXX_STANDARD 20)
@@ -32,7 +32,7 @@ FetchContent_Declare(
 FetchContent_Declare(
 	vk-bootstrap
 	GIT_REPOSITORY https://github.com/charles-lunarg/vk-bootstrap
-	GIT_TAG v1.4.321
+	GIT_TAG v1.4.328
 )
 
 FetchContent_Declare(
