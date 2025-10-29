@@ -19,6 +19,8 @@ namespace {
 
 constexpr uint32_t max_models = 1024;
 
+float ind_num = 0;
+
 struct Vertex {
 	veekay::vec3 position;
 	veekay::vec3 normal;
@@ -134,6 +136,46 @@ veekay::mat4 Camera::view_projection(float aspect_ratio) const {
 
 	return view() * projection;
 }
+veekay::vec3 model_position = {0.0f, 0.0f, 1.0f};
+bool anim_reverse = false;
+bool anim_play = false;
+bool anim_switch = true;
+bool is_circle = true;
+float pause_time = 0.0f;
+float acc_time = 0.0f;
+float cicle = 10.0f;
+float model_rotation;
+veekay::vec3 model_color = {1.0f, 1.0f, 1.0f };
+veekay::vec3 model_curr_diff = {0.0f, 0.0f, 0.0f};
+veekay::mat4 curr_proj;
+bool model_spin = false;
+bool orthograph = true;
+float fig_w = 0.5f;
+float fig_h = 1.0f;
+float radius = 5.0f;
+
+veekay::vec3 circleAnimation(float time){
+	veekay::vec3 diff = {0.0f, 0.0f, 0.0f};
+	float angle = 2.0f * M_PIf * time / cicle;
+	float x = radius * sin(angle);
+	float z = radius - radius * cos(angle) ;
+	diff.x =  x;
+	diff.z =  z;
+	return diff;
+}
+
+veekay::vec3 elipseAnimation(float time){
+	veekay::vec3 diff = {0.0f, 0.0f, 0.0f};
+	float angle = 2.0f * M_PIf * time / cicle;
+	float y = radius * 2.0f * sin(angle);
+	float x = y;
+	float z = 2.0f * radius -  radius * 2.0f * cos(angle);
+	diff.y = y;
+	diff.z = z;
+	diff.x = x;
+	return diff;
+}
+
 
 // NOTE: Loads shader byte code from file
 // NOTE: Your shaders are compiled via CMake with this code too, look it up
@@ -614,6 +656,59 @@ void initialize(VkCommandBuffer cmd) {
 		},
 		.albedo_color = veekay::vec3{0.0f, 0.0f, 1.0f}
 	});
+	class Cylinder{
+	private:
+		const int segments = 50;
+		const float radius = fig_w / 2;
+		const float height = fig_h;
+		veekay::vec3 calculateGradient(float x, int i){
+			float t = (x + height/2.0f) / height;
+			return {0.0f + t, 0.0f, 1.0f - t};
+		};
+		void generateSideSurface(std::vector<Vertex> & vertices, std::vector<uint32_t> & indices){
+			for (int i = 0; i < segments / 2; ++ i){
+				float angle = 2.0f * M_PIf * i / (segments / 2);
+				float x = radius * cos(angle);
+				float z = radius * sin(angle);
+				Vertex bottom, top;
+				bottom.position = {x, -height/2.0f, z};
+				bottom.normal = {cos(angle), 0.0f, sin(angle)};
+				bottom.color = calculateGradient(-height/2.0f, i);
+				top.position = {x, height/2.0f, z};
+				top.normal = {cos(angle), 0.0f, sin(angle)};
+				top.color = calculateGradient(height/2.0f, i);
+				vertices.push_back(bottom);
+				vertices.push_back(top);
+			}
+			for (int i = 0; i < segments / 2; ++ i){
+				uint32_t bleft = (i * 2) % segments;
+				uint32_t tleft = (i * 2 + 1) % segments;
+				uint32_t bright = ((i + 1) * 2) % segments;
+				uint32_t tright = (((i + 1) * 2) + 1) % segments;
+				indices.insert(indices.end(), {tleft, bright, tright, bright, tleft, bleft});
+				indices.insert(indices.end(), {tleft, tright, bright, bright, bleft, tleft});
+			}
+		};
+	public:
+		void generateGeometry(std::vector<Vertex> & vertices, std::vector<uint32_t> & indices){
+			vertices.clear();
+			indices.clear();
+			generateSideSurface(vertices, indices);
+		};
+		
+	};
+	std::vector<Vertex> vertices;
+	std::vector<uint32_t> indices;
+
+	Cylinder geom;
+	geom.generateGeometry(vertices, indices);
+	ind_num = indices.size();
+
+	vertex_buffer = new veekay::graphics::Buffer(vertices.size() * sizeof(Vertex), vertices.data(),
+	                                             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+
+	index_buffer = new veekay::graphics::Buffer(indices.size() * sizeof(uint32_t), indices.data(),
+	                                            VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 }
 
 // NOTE: Destroy resources here, do not cause leaks in your program!
@@ -643,6 +738,15 @@ void shutdown() {
 
 void update(double time) {
 	ImGui::Begin("Controls:");
+	ImGui::InputFloat3("Translation", reinterpret_cast<float*>(&model_position));
+	ImGui::SliderFloat("Rotation", &model_rotation, 0.0f, 2.0f * M_PI);
+	ImGui::Checkbox("Spin?", &model_spin);
+	// TODO: Your GUI stuff here
+	ImGui::Checkbox("Ortho?", &orthograph);
+	ImGui::Checkbox("Simple animation", &anim_switch);
+	ImGui::SliderFloat("Animation Param", &radius, 0.1f, 10.f);
+	ImGui::Checkbox("Play", &anim_play);
+	ImGui::Checkbox("Reversed", &anim_reverse);
 	ImGui::End();
 
 	if (!ImGui::IsWindowHovered()) {
@@ -693,6 +797,37 @@ void update(double time) {
 		uniforms.model = model.transform.matrix();
 		uniforms.albedo_color = model.albedo_color;
 	}
+	if(anim_switch != is_circle){
+		acc_time = 0.0f;
+		pause_time = 0.0f;
+		is_circle = anim_switch;
+	}
+	if (anim_play){
+		float delta;
+		if (pause_time == 0.0f) pause_time = float(time);
+		if (!anim_reverse)
+			{delta = float(time) - pause_time;}
+		else{
+			delta = - float(time) + pause_time;}
+		acc_time  = fmodf(acc_time + delta, cicle);
+		if (acc_time < 0) acc_time += cicle;
+		model_curr_diff = is_circle? circleAnimation(acc_time) : elipseAnimation(acc_time);
+		pause_time = float(time);
+	}
+	if(!anim_play){
+		pause_time = 0.0f;
+	}
+	const float aspect = float(veekay::app.window_width) / float(veekay::app.window_height);
+	if (orthograph) {
+			curr_proj = orthographic(-fig_w * aspect* 0.5f, fig_w  * aspect* 0.5f, 
+				-fig_h * 0.5f, fig_h * 0.5f,
+			camera_near_plane, camera_far_plane);
+		} else {
+			curr_proj = veekay::mat4::projection(
+				camera_fov,
+				aspect,
+				camera_near_plane, camera_far_plane);
+		}
 
 	*(SceneUniforms*)scene_uniforms_buffer->mapped_region = scene_uniforms;
 	std::copy(model_uniforms.begin(),
